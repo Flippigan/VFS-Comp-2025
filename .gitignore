@@ -1,17 +1,22 @@
-# Ignore everything
-*
+# Ignore build artifacts
+build/
+install/
+log/
 
-# But don't ignore these specific files/directories
-!.gitignore
+# Python
+*.pyc
+__pycache__/
+
+# Editor files
+.vscode/
+.idea/
+
+# Logs and system files
+*.log
+.DS_Store
+*~
+
+# But don't ignore these
 !src/
 !.profile
-!.bashrc
 !README.md
-
-# Ignore build artifacts even in src
-src/**/*.o
-src/**/*.pyc
-src/**/__pycache__/
-src/**/.vscode/
-*.tlog
-mav.parm
