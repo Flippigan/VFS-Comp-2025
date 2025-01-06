@@ -1,0 +1,17 @@
+# Ignore everything
+*
+
+# But don't ignore these specific files/directories
+!.gitignore
+!src/
+!.profile
+!.bashrc
+!README.md
+
+# Ignore build artifacts even in src
+src/**/*.o
+src/**/*.pyc
+src/**/__pycache__/
+src/**/.vscode/
+*.tlog
+mav.parm
