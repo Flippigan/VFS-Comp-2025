@@ -1,0 +1,11 @@
+/build/
+/install/
+*.so
+*.o
+*.a
+*.out
+*.exe
+*.log
+__pycache__/
+*.py[cod]
+*$py.class
