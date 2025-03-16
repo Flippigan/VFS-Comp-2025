@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
+"""
+Circle Detector Node - DDS Version
+
+This version uses ArduPilot's built-in DDS interface instead of MAVROS/MAVLINK.
+Key DDS interfaces used:
+- /ap/pose/filtered - For receiving position data
+- /ap/joy - For sending velocity commands
+- ModeSwitch service - For switching between GUIDED and AUTO modes
+
+The OpenCV circle detection and drop mechanism remain unchanged.
+Since the DDS interface doesn't provide direct flight mode feedback,
+this version tracks mode internally based on mode switch requests.
+"""
 
 import rclpy
 from rclpy.node import Node
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo, Joy
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from mavros_msgs.msg import State
-from mavros_msgs.srv import CommandBool, SetMode
+from ardupilot_msgs.srv import ModeSwitch
 import tf2_ros
 import tf2_geometry_msgs
 from tf2_ros import TransformException
@@ -21,12 +33,22 @@ class CircleDetectorNode(Node):
     def __init__(self):
         super().__init__('circle_detector')
         
+        # Mode constants for ArduPilot's Copter modes
+        self.MODE_STABILIZE = 0
+        self.MODE_ACRO = 1
+        self.MODE_ALT_HOLD = 2
+        self.MODE_AUTO = 3
+        self.MODE_GUIDED = 4
+        self.MODE_LOITER = 5
+        self.MODE_RTL = 6
+        self.MODE_CIRCLE = 7
+        
         # Initialize CV bridge
         self.bridge = CvBridge()
         
         # Initialize camera info and state
         self.camera_info = None
-        self.current_state = None
+
         self.current_pose = None
         self.target_detected = False
         self.target_pose = None
@@ -42,8 +64,8 @@ class CircleDetectorNode(Node):
         self.last_mode_request_time = self.get_clock().now()
         self.MODE_REQUEST_TIMEOUT = 5.0  # seconds
         
-        # MAVROS connection status
-        self.mavros_connected = False
+        # DDS connection status
+        self.dds_connected = False
         self.last_state_warning_time = self.get_clock().now()
         self.state_warning_interval = 5.0  # seconds
         
@@ -58,14 +80,9 @@ class CircleDetectorNode(Node):
             '/camera/camera_info',
             self.camera_info_callback,
             10)
-        self.state_sub = self.create_subscription(
-            State,
-            '/mavros/state',
-            self.state_callback,
-            10)
         
-        # Create timer to check MAVROS connection status
-        self.mavros_check_timer = self.create_timer(1.0, self.check_mavros_connection)
+        # Create timer to check DDS connection status
+        self.mavros_check_timer = self.create_timer(1.0, self.check_dds_connection)
         
         # Create QoS profile with BEST_EFFORT reliability
         qos = rclpy.qos.QoSProfile(
@@ -91,14 +108,15 @@ class CircleDetectorNode(Node):
             PoseStamped,
             '/circle_detector/target_pose',
             10)
-        self.cmd_vel_pub = self.create_publisher(
-            TwistStamped,
-            '/mavros/setpoint_velocity/cmd_vel',
+        
+        # Replace MAVROS velocity publisher with DDS Joy publisher
+        self.joy_pub = self.create_publisher(
+            Joy,
+            '/ap/joy',
             10)
             
-        # Initialize service clients
-        self.arming_client = self.create_client(CommandBool, '/mavros/cmd/arming')
-        self.set_mode_client = self.create_client(SetMode, '/mavros/set_mode')
+        # Initialize service clients for DDS instead of MAVROS
+        self.set_mode_client = self.create_client(ModeSwitch, 'rq/ap/mode_switchRequest')
             
         # Initialize tf2
         self.tf_buffer = tf2_ros.Buffer()
@@ -132,38 +150,22 @@ class CircleDetectorNode(Node):
             10
         )
         
-        self.get_logger().info('Circle detector node initialized')
+        self.get_logger().info('Circle detector node initialized with DDS interface')
         
-    def check_mavros_connection(self):
-        """Periodically check and report if MAVROS state is not being received"""
+    def check_dds_connection(self):
+        """Periodically check and report if DDS is functioning"""
         current_time = self.get_clock().now()
         time_since_warning = (current_time - self.last_state_warning_time).nanoseconds / 1e9
         
-        if self.current_state is None and time_since_warning > self.state_warning_interval:
-            self.get_logger().warn('No MAVROS state received yet. Check if MAVROS is running and connected.')
+        if not self.pose_data_confirmed and time_since_warning > self.state_warning_interval:
+            self.get_logger().warn('No DDS pose data received yet. Check if DDS is properly configured.')
             self.last_state_warning_time = current_time
             
-        # Check if we've just connected to MAVROS
-        if self.current_state is not None and not self.mavros_connected:
-            self.mavros_connected = True
-            self.get_logger().info('MAVROS connection established! Current flight mode: ' + 
-                                  self.current_state.mode)
-
-    def state_callback(self, msg):
-        # Log when flight mode changes
-        if self.current_state is None or self.current_state.mode != msg.mode:
-            self.get_logger().info(f'Flight mode changed to: {msg.mode}')
-            
-            # Reset mode switch flag when mode actually changes
-            if self.mode_switch_requested and (
-                (self.in_circle_approach_mode and msg.mode == "GUIDED") or
-                (self.drop_completed and msg.mode == "AUTO")):
-                self.mode_switch_requested = False
-                
-        # Update state
-        self.current_state = msg
-        self.mavros_connected = True  # Mark as connected when we receive state
-        
+        # Check if we've just connected based on receiving pose data
+        if self.pose_data_confirmed and not self.dds_connected:
+            self.dds_connected = True
+            self.get_logger().info('DDS connection established! Receiving pose data.')
+    
     def local_pos_callback(self, msg):
         # Only log once to confirm connection is working
         if not self.pose_data_confirmed:
@@ -240,20 +242,19 @@ class CircleDetectorNode(Node):
             self.get_logger().error(f'Control loop error: {str(e)}')
     
     def publish_velocity(self, vx, vy, vz, yaw):
-        """Publish velocity command to MAVROS"""
-        cmd_vel = TwistStamped()
-        cmd_vel.header.stamp = self.get_clock().now().to_msg()
-        cmd_vel.header.frame_id = 'base_link'
+        """Publish velocity command using DDS Joy message"""
+        joy_msg = Joy()
+        joy_msg.header.stamp = self.get_clock().now().to_msg()
+        joy_msg.header.frame_id = 'base_link'
         
-        # Linear velocity
-        cmd_vel.twist.linear.x = float(vx)
-        cmd_vel.twist.linear.y = float(vy)
-        cmd_vel.twist.linear.z = float(vz)
+        # Joy message requires axes array for velocity commands
+        # Format: [vx, vy, vz, yaw_rate]
+        joy_msg.axes = [float(vx), float(vy), float(vz), float(yaw)]
         
-        # Angular velocity (yaw)
-        cmd_vel.twist.angular.z = float(yaw)
+        # Set buttons array (required by Joy message)
+        joy_msg.buttons = []
         
-        self.cmd_vel_pub.publish(cmd_vel)
+        self.joy_pub.publish(joy_msg)
         
     def image_callback(self, msg):
         if self.camera_info is None:
@@ -329,25 +330,18 @@ class CircleDetectorNode(Node):
                     
                     # Switch to GUIDED mode when circle is first detected and we're not already in circle approach mode
                     if not self.in_circle_approach_mode and not self.drop_completed:
-                        # Check if MAVROS is connected before attempting mode change
-                        if self.mavros_connected and self.current_state is not None:
+                        # Check if DDS is connected before attempting mode change
+                        if self.dds_connected:
                             self.get_logger().info('Circle detected! Switching to GUIDED mode for approach')
-                            if self.set_mode("GUIDED"):
+                            if self.set_mode(self.MODE_GUIDED):
                                 self.in_circle_approach_mode = True
                                 self.drop_completed = False
                         else:
-                            self.get_logger().warn('Circle detected but MAVROS not connected. Cannot switch to GUIDED mode.')
+                            self.get_logger().warn('Circle detected but DDS not connected. Cannot switch to GUIDED mode.')
                 
                 # Draw additional information on debug image
                 text = f"X: {pose_msg.pose.position.x:.2f}m Y: {pose_msg.pose.position.y:.2f}m Z: {pose_msg.pose.position.z:.2f}m"
                 cv2.putText(debug_image, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                
-                # Show mode on debug image
-                if self.current_state:
-                    mode_text = f"Mode: {self.current_state.mode}"
-                    cv2.putText(debug_image, mode_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
-                else:
-                    cv2.putText(debug_image, "Mode: MAVROS not connected", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
                 
                 # Publish the pose
                 self.target_pose_pub.publish(pose_msg)
@@ -363,17 +357,13 @@ class CircleDetectorNode(Node):
             drops_text = f"Drops remaining: {self.drops_remaining}"
             cv2.putText(debug_image, drops_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
             
-            # Show MAVROS connection status
-            if self.mavros_connected:
-                if self.current_state:
-                    mode_text = f"Mode: {self.current_state.mode}"
-                    connection_status = "MAVROS: Connected"
-                else:
-                    mode_text = "Mode: Unknown"
-                    connection_status = "MAVROS: Connected (no state)"
+            # Show DDS connection status
+            if self.dds_connected:
+                mode_text = f"Mode: {'GUIDED' if self.in_circle_approach_mode else 'AUTO'}"
+                connection_status = "DDS: Connected"
             else:
                 mode_text = "Mode: Unknown"
-                connection_status = "MAVROS: Not connected"
+                connection_status = "DDS: Not connected"
             
             cv2.putText(debug_image, mode_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 165, 0), 2)
             cv2.putText(debug_image, connection_status, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
@@ -394,7 +384,7 @@ class CircleDetectorNode(Node):
             # If we're in circle approach mode but have no drops left, switch back to AUTO
             if self.in_circle_approach_mode and not self.drop_completed:
                 self.get_logger().info('No drops left, returning to AUTO mode')
-                if self.set_mode("AUTO"):
+                if self.set_mode(self.MODE_AUTO):
                     self.in_circle_approach_mode = False
                     self.drop_completed = True
             
@@ -441,21 +431,7 @@ class CircleDetectorNode(Node):
         self.servo_pub.publish(servo_msg)
 
     def set_mode(self, mode):
-        """Request mode change to MAVROS"""
-        if self.current_state is None:
-            self.get_logger().warn('Cannot change mode: No state information available from MAVROS')
-            self.get_logger().warn('Check if MAVROS is running and the drone is connected')
-            return False
-            
-        if self.current_state.mode == mode:
-            self.get_logger().info(f'Already in {mode} mode')
-            return True
-            
-        # Only accept mode changes if connected
-        if not self.current_state.connected:
-            self.get_logger().warn(f'Cannot change to {mode} mode: Drone is not connected')
-            return False
-            
+        """Request mode change using DDS ModeSwitch service"""
         # Don't spam mode requests
         current_time = self.get_clock().now()
         time_since_last_request = (current_time - self.last_mode_request_time).nanoseconds / 1e9
@@ -464,11 +440,17 @@ class CircleDetectorNode(Node):
             return False
             
         # Create mode request
-        req = SetMode.Request()
-        req.custom_mode = mode
+        req = ModeSwitch.Request()
+        req.mode = mode  # Use the numeric mode value
         
+        # Check if service is available
+        if not self.set_mode_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error(f'Mode switch service not available')
+            return False
+            
         # Send request
-        self.get_logger().info(f'Requesting mode change to {mode}')
+        mode_name = self.get_mode_name(mode)
+        self.get_logger().info(f'Requesting mode change to {mode_name} ({mode})')
         self.set_mode_client.call_async(req).add_done_callback(
             lambda future: self.mode_change_callback(future, mode))
         
@@ -478,23 +460,44 @@ class CircleDetectorNode(Node):
         return True
         
     def mode_change_callback(self, future, requested_mode):
-        """Handle mode change response"""
+        """Handle mode change response from DDS service"""
         try:
             response = future.result()
-            if response.mode_sent:
-                self.get_logger().info(f'Mode change to {requested_mode} accepted')
+            mode_name = self.get_mode_name(requested_mode)
+            if response.status:
+                self.get_logger().info(f'Mode change to {mode_name} accepted')
+                # Manually update our mode tracking since we don't have state updates
+                if requested_mode == self.MODE_GUIDED:
+                    self.in_circle_approach_mode = True
+                    self.drop_completed = False
+                elif requested_mode == self.MODE_AUTO:
+                    self.in_circle_approach_mode = False
             else:
-                self.get_logger().error(f'Mode change to {requested_mode} rejected')
+                self.get_logger().error(f'Mode change to {mode_name} rejected: {response.curr_mode}')
                 self.mode_switch_requested = False
         except Exception as e:
             self.get_logger().error(f'Mode change service call failed: {str(e)}')
             self.mode_switch_requested = False
     
+    def get_mode_name(self, mode):
+        """Convert mode number to human-readable name"""
+        mode_map = {
+            self.MODE_STABILIZE: "STABILIZE",
+            self.MODE_ACRO: "ACRO",
+            self.MODE_ALT_HOLD: "ALT_HOLD",
+            self.MODE_AUTO: "AUTO",
+            self.MODE_GUIDED: "GUIDED",
+            self.MODE_LOITER: "LOITER",
+            self.MODE_RTL: "RTL",
+            self.MODE_CIRCLE: "CIRCLE",
+        }
+        return mode_map.get(mode, f"UNKNOWN({mode})")
+    
     def return_to_auto_mode(self):
         """Switch back to AUTO mode if drop is completed"""
         if self.drop_completed and self.in_circle_approach_mode:
             self.get_logger().info('Drop completed. Returning to AUTO mode to resume mission')
-            if self.set_mode("AUTO"):
+            if self.set_mode(self.MODE_AUTO):
                 self.in_circle_approach_mode = False
 
 def main(args=None):
