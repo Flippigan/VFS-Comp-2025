@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ardupilot_gz_bringup</name>
+  <version>1.0.0</version>
+  <description>Launch files for ArduPilot-Gazebo integration</description>
+  <maintainer email="dev@ardupilot.org">ArduPilot Team</maintainer>
+  <license>GPL-3.0</license>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
