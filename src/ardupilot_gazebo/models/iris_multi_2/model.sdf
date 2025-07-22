@@ -1,0 +1,82 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="iris_multi_2">
+    <!-- Include base iris model -->
+    <include>
+      <uri>model://iris_with_standoffs</uri>
+    </include>
+    
+    <!-- ArduPilot Plugin with explicit ports for instance 2 -->
+    <plugin filename="libArduPilotPlugin.so" name="arducopter_plugin">
+      <fdm_addr>127.0.0.1</fdm_addr>
+      <fdm_port_in>9023</fdm_port_in>
+      <fdm_port_out>9022</fdm_port_out>
+      <modelXYZToAirplaneXForwardZDown>0 0 0 3.141593 0 0</modelXYZToAirplaneXForwardZDown>
+      <gazeboXYZToNED>0 0 0 3.141593 0 0</gazeboXYZToNED>
+      <imuName>iris_multi_2::iris_with_standoffs::imu_link::imu_sensor</imuName>
+      <connectionTimeoutMaxCount>5</connectionTimeoutMaxCount>
+      <motorSpeedCommandPubTopic>/motor_speed/2</motorSpeedCommandPubTopic>
+      
+      <!-- Control channels (same as other instances) -->
+      <control channel="0">
+        <type>VELOCITY</type>
+        <offset>0</offset>
+        <p_gain>0.20</p_gain>
+        <i_gain>0</i_gain>
+        <d_gain>0</d_gain>
+        <i_max>0</i_max>
+        <i_min>0</i_min>
+        <cmd_max>2.3984</cmd_max>
+        <cmd_min>0.1008</cmd_min>
+        <jointName>iris_with_standoffs::rotor_0_joint</jointName>
+        <multiplier>838</multiplier>
+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+      </control>
+      
+      <control channel="1">
+        <type>VELOCITY</type>
+        <offset>0</offset>
+        <p_gain>0.20</p_gain>
+        <i_gain>0</i_gain>
+        <d_gain>0</d_gain>
+        <i_max>0</i_max>
+        <i_min>0</i_min>
+        <cmd_max>2.3984</cmd_max>
+        <cmd_min>0.1008</cmd_min>
+        <jointName>iris_with_standoffs::rotor_1_joint</jointName>
+        <multiplier>838</multiplier>
+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+      </control>
+      
+      <control channel="2">
+        <type>VELOCITY</type>
+        <offset>0</offset>
+        <p_gain>0.20</p_gain>
+        <i_gain>0</i_gain>
+        <d_gain>0</d_gain>
+        <i_max>0</i_max>
+        <i_min>0</i_min>
+        <cmd_max>2.3984</cmd_max>
+        <cmd_min>0.1008</cmd_min>
+        <jointName>iris_with_standoffs::rotor_2_joint</jointName>
+        <multiplier>-838</multiplier>
+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+      </control>
+      
+      <control channel="3">
+        <type>VELOCITY</type>
+        <offset>0</offset>
+        <p_gain>0.20</p_gain>
+        <i_gain>0</i_gain>
+        <d_gain>0</d_gain>
+        <i_max>0</i_max>
+        <i_min>0</i_min>
+        <cmd_max>2.3984</cmd_max>
+        <cmd_min>0.1008</cmd_min>
+        <jointName>iris_with_standoffs::rotor_3_joint</jointName>
+        <multiplier>-838</multiplier>
+        <controlVelocitySlowdownSim>1</controlVelocitySlowdownSim>
+      </control>
+    </plugin>
+  </model>
+</sdf>
